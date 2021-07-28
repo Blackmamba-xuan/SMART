@@ -1,0 +1,64 @@
+<launch>
+  <!-- launch turtlebot3_autorace_detect_lane.launch before launch this file -->
+
+  <!-- lane control -->
+
+  <!-- <group ns="robot5">
+    <node pkg="turtlebot3_autorace_control" type="control_lane" name="control_lane" output="screen">
+      <remap from="control/lane" to="detect/lane" />
+      <remap from="control/cmd_vel" to="cmd_vel" />
+    </node>
+  </group> -->
+
+  <group ns="robot5">
+    <node pkg="turtlebot3_autorace_control" type="control_lane_gazebo" name="control_lane_gazebo" output="screen">
+      <param name="lane_flag" value="0"/>
+      <param name="robot_name" value="robot5"/>
+      <param name="min_vel" value="0.03"/>
+      <param name="max_vel" value="0.15"/>
+    </node>
+  </group>
+
+  <group ns="robot6">
+    <node pkg="turtlebot3_autorace_control" type="control_lane_gazebo" name="control_lane_gazebo" output="screen">
+      <param name="lane_flag" value="1"/>
+      <param name="robot_name" value="robot6"/>
+      <param name="min_vel" value="0.04"/>
+      <param name="max_vel" value="0.15"/>
+    </node>
+  </group>
+
+  <group ns="robot7">
+    <node pkg="turtlebot3_autorace_control" type="control_lane_gazebo" name="control_lane_gazebo" output="screen">
+      <param name="lane_flag" value="0"/>
+      <param name="robot_name" value="robot7"/>
+      <param name="min_vel" value="0.04"/>
+      <param name="max_vel" value="0.15"/>
+    </node>
+  </group>
+
+  <!-- <group ns="robot8">
+    <node pkg="turtlebot3_autorace_control" type="control_lane_gazebo" name="control_lane_gazebo" output="screen">
+      <param name="lane_flag" value="0"/>
+      <param name="robot_name" value="robot8"/>
+      <param name="min_vel" value="0.04"/>
+      <param name="max_vel" value="0.15"/>
+    </node>
+  </group> -->
+
+  <!-- <group ns="robot7">
+    <node pkg="turtlebot3_autorace_control" type="control_lane" name="control_lane" output="screen">
+      <remap from="control/lane" to="detect/lane" />
+      <remap from="control/cmd_vel" to="cmd_vel" />
+    </node>
+  </group> -->
+
+  <!-- <group ns="robot4">
+    <node pkg="turtlebot3_autorace_control" type="control_lane" name="control_lane" output="screen">
+      <remap from="control/lane" to="detect/lane" />
+      <remap from="control/cmd_vel" to="cmd_vel" />
+    </node>
+  </group> -->
+
+
+</launch>

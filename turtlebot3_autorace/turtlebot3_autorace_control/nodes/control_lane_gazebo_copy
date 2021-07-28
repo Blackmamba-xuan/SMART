@@ -1,0 +1,202 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+import rospy
+import numpy as np
+from std_msgs.msg import Float64, UInt8
+from geometry_msgs.msg import Twist
+from std_msgs.msg import Bool
+from sensor_msgs.msg import Image, LaserScan
+from math import radians
+import time
+import cv2
+from cv_bridge import CvBridge, CvBridgeError
+from sensor_msgs.msg import Image, CompressedImage
+
+
+class ControlLane():
+    def __init__(self):
+        self.sub_lane = rospy.Subscriber('detect/lane', Float64, self.cbFollowLane, queue_size = 1)
+        self.sub_laneChange = rospy.Subscriber('control/laneChange',UInt8,self.laneChangeCallBack,queue_size=1)
+        self.image_sub = rospy.Subscriber( "camera/image", Image, self.callback)
+        self.sub_reSet = rospy.Subscriber('control/reset',Bool,self.resetCallBack,queue_size=1)
+        self.sub_max_vel = rospy.Subscriber('control/max_vel', Float64, self.cbGetMaxVel, queue_size = 1)
+        self.sub_lane_flag = rospy.Subscriber('detect/lane_flag', UInt8, self.setLaneFlag, queue_size=1)
+        self.pub_construct_lane = rospy.Publisher('detect/construct_lane', Bool, queue_size=1)
+        self.pub_cmd_vel = rospy.Publisher('cmd_vel', Twist, queue_size = 1)
+        self.isLanechange=False
+        self.lastError = 0
+        self.MAX_VEL = 0.15
+        self.speedScale=1
+        self.bridge = CvBridge()
+        self.counter =1 
+
+    def cbFollowLane(self,desired_center):
+        #print('jinrulezheli:'+str(self.isLanechange))
+        if self.isLanechange:
+            return
+        else:
+            center = desired_center.data
+            # print('center = desired_center.data: ', desired_center.data)
+            error = center - 500
+            Kp = 0.0025
+            Kd = 0.007
+            # print('error: ', error)
+            angular_z = Kp * error + Kd * (error - self.lastError)
+            self.lastError = error
+            twist = Twist()
+            twist.linear.x = min(self.MAX_VEL * ((1 - abs(error) / 500) ** 2.2), 0.2)
+            twist.linear.x = twist.linear.x * self.speedScale
+            twist.linear.y = 0
+            twist.linear.z = 0
+            twist.angular.x = 0
+            twist.angular.y = 0
+            twist.angular.z = -max(angular_z, -2.0) if angular_z < 0 else -min(angular_z, 2.0)
+            self.pub_cmd_vel.publish(twist)
+            #print('x: ', twist.linear.x, 'z: ', twist.angular.z)
+
+    def setLaneFlag(self, lane_flag_msg):
+        if self.isLanechange == False:
+            self.lane_flag=lane_flag_msg.data
+
+    def cbGetMaxVel(self, max_vel_msg):
+        self.MAX_VEL = max_vel_msg.data
+    
+    def laneChangeCallBack(self,msg):
+        print('ACTION!')
+        action=msg.data
+
+        if action == 2:
+            self.speedScale = 0.5
+        if action == 1:
+            self.speedScale = 1.5
+        elif action ==0: 
+            self.speedScale = 1
+            print('self.lane_flag: ',self.lane_flag)
+            # if (self.lane_flag == 1) and (self.isLanechange == False):
+            if self.isLanechange == False:
+                self.laneChange()
+            else:
+                return
+    
+    def laneChange(self):
+        print('enter lanechange')
+        self.isLanechange=True
+        stop_cmd = Twist()
+        stop_cmd.linear.x = 0.0
+        stop_cmd.linear.y = 0
+        stop_cmd.linear.z = 0
+        stop_cmd.angular.x = 0
+        stop_cmd.angular.y = 0
+        stop_cmd.angular.z = 0.0
+        turn_cmd = Twist()
+        turn_cmd.linear.x = 0
+        turn_cmd.linear.y = 0
+        turn_cmd.linear.z = 0
+        turn_cmd.angular.x = 0
+        turn_cmd.angular.y = 0
+        move_cmd = Twist()
+        move_cmd.linear.x = 0.15
+        move_cmd.linear.y = 0
+        move_cmd.linear.z = 0
+        move_cmd.angular.x = 0
+        move_cmd.angular.y = 0
+        move_cmd.angular.z = 0.0
+        # step1: stop
+        self.pub_cmd_vel.publish(stop_cmd)
+        for x in range(0, 5):
+            turn_cmd.angular.z = radians(70)  # 70 deg/s in radians/s
+            self.pub_cmd_vel.publish(turn_cmd)
+            time.sleep(0.2)
+            # self.r.sleep()
+        self.pub_cmd_vel.publish(stop_cmd)
+        time.sleep(0.5)
+        self.pub_cmd_vel.publish(stop_cmd)
+        print('publish move cmd')
+        self.pub_cmd_vel.publish(move_cmd)
+        time.sleep(0.5)
+        self.pub_cmd_vel.publish(move_cmd)
+        time.sleep(1)
+        #
+        # self.pub_cmd_vel.publish(stop_cmd)
+        # time.sleep(0.5)
+        # self.pub_cmd_vel.publish(stop_cmd)
+
+        while (True):
+            print("enter detect distance...")
+            dist = self.dist_to_lane(self.image)
+            # r.sleep()
+            print("dist:", dist)
+            if (dist < 10 or dist > 210):
+                #time.sleep(0.8)
+                self.pub_cmd_vel.publish(stop_cmd)
+                time.sleep(0.5)
+                self.pub_cmd_vel.publish(stop_cmd)
+                # self.r.sleep()
+                print('publish stop')
+                break
+
+        # step4: turn -70
+        print('break success')
+        for x in range(0, 4):
+            turn_cmd.angular.z = radians(-65)
+            self.pub_cmd_vel.publish(turn_cmd)
+            time.sleep(0.2)
+            # self.r.sleep()
+        print('publish stop')
+        self.pub_cmd_vel.publish(stop_cmd)
+        time.sleep(0.1)
+        self.pub_cmd_vel.publish(stop_cmd)
+        time.sleep(0.1)
+        self.pub_construct_lane.publish(Bool(data=False))
+        time.sleep(0.1)
+        self.pub_construct_lane.publish(Bool(data=False))
+        time.sleep(0.1)
+        self.isLanechange = False
+    
+    def callback(self, data):
+
+        if self.counter % 2 != 0:
+            self.counter += 1
+            return
+        else:
+            self.counter = 1
+
+        try:
+            cv_image = self.bridge.imgmsg_to_cv2(data, "bgr8")
+        except CvBridgeError as e:
+            print(e)
+
+        self.image_received = True
+        self.image = cv_image
+    def resetCallBack(self,data):
+        self.pub_cmd_vel.publish(Twist())
+        self.pub_construct_lane.publish(Bool(data=False))
+        self.speedScale =1
+        time.sleep(1)
+    
+    def dist_to_lane(self,img):
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        img = cv2.medianBlur(img, 3)
+        ret, mask = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)        
+        #cv.imwrite("mask_1.jpg",madist
+        h,w = mask.shape  # 240, 32dist
+        anchor = 3        # anchor of y axis 
+        out_point = 10    # init value
+        for point_x in range(h):
+            temp_x = h - point_x - 1
+            if(temp_x < h - 100): # more than half of h
+                break
+            if(mask[temp_x][anchor]) >= 200:  # mask value
+                out_point = temp_x
+                break
+        dist = h - out_point
+        return dist
+    
+
+    def main(self):
+        rospy.spin()
+
+if __name__ == '__main__':
+    rospy.init_node('control_lane_gazebo')
+    node = ControlLane()
+    node.main()

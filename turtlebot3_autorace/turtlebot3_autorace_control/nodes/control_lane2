@@ -1,0 +1,297 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+################################################################################
+# Copyright 2018 ROBOTIS CO., LTD.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+################################################################################
+
+# Author: Leon Jung, Gilbert
+ 
+import rospy
+import numpy as np
+from std_msgs.msg import Float64
+from geometry_msgs.msg import Twist
+from std_msgs.msg import Bool
+from sensor_msgs.msg import Image
+from math import radians
+import time
+import cv2
+from cv_bridge import CvBridge, CvBridgeError
+from sensor_msgs.msg import Image, CompressedImage
+
+from model import *
+from PIL import Image as PILImage
+
+# vae=VAE().cuda()
+# vae.load_state_dict(torch.load('/home/lzx/catkin_ws/src/turtlebot3_autorace/turtlebot3_autorace_control/nodes/6_13/vae_99.pkl'))
+# model=Learner().cuda()
+# model.load_state_dict(torch.load('/home/lzx/catkin_ws/src/turtlebot3_autorace/turtlebot3_autorace_control/nodes/6_13/model_707.pkl'))
+
+class ControlLane():
+    def __init__(self):
+        self.sub_lane = rospy.Subscriber('control/lane', Float64, self.cbFollowLane, queue_size = 1)
+        self.sub_max_vel = rospy.Subscriber('control/max_vel', Float64, self.cbGetMaxVel, queue_size = 1)
+        self.pub_cmd_vel = rospy.Publisher('control/cmd_vel', Twist, queue_size = 1)
+        self.sub_overtake = rospy.Subscriber('control/overtake',Bool,self.setOvertake,queue_size=1)
+        self.image_sub = rospy.Subscriber( "camera/image", Image, self.callback)
+        self.sub_extrinsic_image=rospy.Subscriber('camera/image_projected/compressed',CompressedImage,self.image_projected_callBack,queue_size=1)
+        # self.pub_speedBack = rospy.Publisher('/robot1/control/speedBack',Bool,queue_size=1)
+
+
+        self.lastError = 0
+        self.MAX_VEL = 0.12
+        self.overTakeFlag=False
+        self.isOverTaking=False
+        self.bridge = CvBridge()
+        self.obs_dist = 0
+        self.SAFE_DIST1 = 0.01
+        self.SAFE_DIST2 = 0.8
+        self.save_count=0
+
+        rospy.on_shutdown(self.fnShutDown)
+
+    def cbGetMaxVel(self, max_vel_msg):
+        self.MAX_VEL = max_vel_msg.data
+
+    def cbFollowLane(self, desired_center):
+        center = desired_center.data
+        print('center = desired_center.data: ', desired_center.data)
+        error = center - 500
+        Kp = 0.0025
+        Kd = 0.007
+        #print('error: ', error)
+        angular_z = Kp * error + Kd * (error - self.lastError)
+        self.lastError = error
+        # twist = Twist()
+        # twist.linear.x = min(self.MAX_VEL * ((1 - abs(error) / 500) ** 2.2), 0.2)
+        # twist.linear.y = 0
+        # twist.linear.z = 0
+        # twist.angular.x = 0
+        # twist.angular.y = 0
+        # twist.angular.z = -max(angular_z, -2.0) if angular_z < 0 else -min(angular_z, 2.0)
+        # self.pub_cmd_vel.publish(twist)
+
+        # image_name='/home/lzx/Demo/image_collection_6_11/'+str(twist.linear.x)+'_'+str(twist.angular.z)+'.png'
+        # cv2.imwrite(image_name,self.project_image)
+        # print('save_image: '+image_name)
+        #modify code
+        img = PILImage.fromarray(self.project_image)
+        img = transform(img)
+        img = torch.unsqueeze(img, 1).cuda()  # 增加一维
+        out1, out2 = vae.encoder(img), vae.encoder(img)
+        mu = vae.fc11(out1.view(out1.size(0), -1))
+        logvar = vae.fc12(out2.view(out2.size(0), -1))
+        z = vae.reparameterize(mu, logvar)           
+        speed=model(z).tolist()[0]
+        print('speed is : ', speed)
+        if (speed[0]>0 and speed[0]< 0.2) and abs(speed[1]) <1  and (abs(speed[0])+abs(speed[1]))<0.35:
+            twist = Twist()
+            twist.linear.x = speed[0]
+            twist.linear.y = 0
+            twist.linear.z = 0
+            twist.angular.x = 0
+            twist.angular.y = 0
+            if speed[1]>0.1:
+                print('big curve')
+                twist.angular.z = speed[1]*2
+            else:
+                twist.angular.z=speed[1]
+            self.pub_cmd_vel.publish(twist)
+
+    def fnShutDown(self):
+        rospy.loginfo("Shutting down. cmd_vel will be 0")
+        twist = Twist()
+        twist.linear.x = 0
+        twist.linear.y = 0
+        twist.linear.z = 0
+        twist.angular.x = 0
+        twist.angular.y = 0
+        twist.angular.z = 0
+        self.pub_cmd_vel.publish(twist) 
+    def overTake(self):
+        print('enter overtake')
+        self.isOverTaking=True
+        stop_cmd = Twist()
+        stop_cmd.linear.x = 0.0
+        stop_cmd.linear.y = 0
+        stop_cmd.linear.z = 0
+        stop_cmd.angular.x = 0
+        stop_cmd.angular.y = 0
+        stop_cmd.angular.z = 0.0
+        # step1: stop
+        self.pub_cmd_vel.publish(stop_cmd)
+        time.sleep(0.5)
+        self.pub_cmd_vel.publish(stop_cmd)
+        #turn at 90 deg/s
+        turn_cmd = Twist()
+        turn_cmd.linear.x = 0
+        turn_cmd.linear.y = 0
+        turn_cmd.linear.z = 0
+        turn_cmd.angular.x = 0
+        turn_cmd.angular.y = 0
+        move_cmd = Twist() 
+        move_cmd.linear.x = 0.1
+        move_cmd.linear.y = 0
+        move_cmd.linear.z = 0
+        move_cmd.angular.x = 0
+        move_cmd.angular.y = 0
+        move_cmd.angular.z = 0.0
+        for x in range(0,4):
+            turn_cmd.angular.z = radians(70); #70 deg/s in radians/s
+            self.pub_cmd_vel.publish(turn_cmd)
+            time.sleep(0.2)
+            #self.r.sleep()
+        self.pub_cmd_vel.publish(stop_cmd)
+        time.sleep(0.5)
+        self.pub_cmd_vel.publish(stop_cmd)
+
+        self.pub_cmd_vel.publish(move_cmd)
+        time.sleep(0.5)
+        self.pub_cmd_vel.publish(move_cmd)
+        while (True):
+            #print("enter...") 
+            dist = self.dist_to_lane(self.image)
+            #r.sleep()
+            print("dist:", dist)
+            if(dist < 35):
+                time.sleep(0.5)
+                self.pub_cmd_vel.publish(stop_cmd)
+                time.sleep(0.5)
+                self.pub_cmd_vel.publish(stop_cmd)
+                #self.r.sleep()  
+                print('publish stop')
+                break
+            
+        # step4: turn -70
+        print('break success')
+        for x in range(0,5):          
+            turn_cmd.angular.z = radians(-70)
+            self.pub_cmd_vel.publish(turn_cmd)
+            time.sleep(0.2)
+            #self.r.sleep()
+        #accelerate
+        self.pub_cmd_vel.publish(stop_cmd)
+        time.sleep(0.5)
+        self.pub_cmd_vel.publish(stop_cmd)
+        move_cmd.linear.x = 0.15
+        self.pub_cmd_vel.publish(move_cmd)
+        time.sleep(0.5)
+        self.pub_cmd_vel.publish(move_cmd)
+        time.sleep(4)
+        for x in range(0,4):
+            turn_cmd.angular.z = radians(-70)
+            self.pub_cmd_vel.publish(turn_cmd)
+            time.sleep(0.2)
+        move_cmd.linear.x = 0.1
+        self.pub_cmd_vel.publish(move_cmd)
+        time.sleep(0.5)
+        self.pub_cmd_vel.publish(move_cmd)
+        while (True):
+            #print("enter...") 
+            dist = self.dist_to_lane(self.image)
+            #r.sleep()
+            print("dist:", dist)
+            if(dist < 40 or dict >150):
+                time.sleep(0.5)
+                self.pub_cmd_vel.publish(stop_cmd)
+                time.sleep(0.5)
+                self.pub_cmd_vel.publish(stop_cmd)
+                #self.r.sleep()  
+                print('publish stop')
+                break
+            
+        for x in range(0,5):          
+            turn_cmd.angular.z = radians(70)
+            self.pub_cmd_vel.publish(turn_cmd)
+            time.sleep(0.2)
+        self.pub_cmd_vel.publish(move_cmd)
+        time.sleep(0.5)
+        self.pub_cmd_vel.publish(move_cmd)
+        time.sleep(0.5)
+        flag=Bool()
+        flag.data=True
+        self.pub_speedBack.publish(flag)
+        time.sleep(0.5)
+        self.pub_speedBack.publish(flag)
+
+    
+    def setOvertake(self,flag):
+        self.overTakeFlag=True
+        print('set Overtake')
+    
+    def callback(self, data):
+        try:
+            cv_image = self.bridge.imgmsg_to_cv2(data, "bgr8")
+        except CvBridgeError as e:
+            print(e)
+
+        self.image_received = True
+        self.image = cv_image
+    
+    def image_projected_callBack(self,image_msg):
+        #print('jinru le zheli la al ala al')
+        np_arr = np.fromstring(image_msg.data, np.uint8)
+        cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        self.project_image=cv_image
+        # simulation code
+        # img = PILImage.fromarray(self.project_image)
+        # img = transform(img)
+        # img = torch.unsqueeze(img, 1).cuda()  # 增加一维
+        # out1, out2 = vae.encoder(img), vae.encoder(img)
+        # mu = vae.fc11(out1.view(out1.size(0), -1))
+        # logvar = vae.fc12(out2.view(out2.size(0), -1))
+        # z = vae.reparameterize(mu, logvar)           
+        # speed=model(z).tolist()[0]
+        # print('speed is : ', speed)
+        # if (speed[0]>0 and speed[0]< 0.2) and abs(speed[1]) <1  and (abs(speed[0])+abs(speed[1]))<0.35:
+        #     twist = Twist()
+        #     twist.linear.x = speed[0]
+        #     twist.linear.y = 0
+        #     twist.linear.z = 0
+        #     twist.angular.x = 0
+        #     twist.angular.y = 0
+        #     if speed[1]>0.1:
+        #         print('big curve')
+        #         twist.angular.z = speed[1]*5
+        #     else:
+        #         twist.angular.z=speed[1]
+        #     self.pub_cmd_vel.publish(twist)
+
+    def dist_to_lane(self,img):
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        img = cv2.medianBlur(img, 3)
+        ret, mask = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)        
+        #cv.imwrite("mask_1.jpg",madist
+        h,w = mask.shape  # 240, 32dist
+        anchor = 3        # anchor of y axis 
+        out_point = 10    # init value
+        for point_x in range(h):
+            temp_x = h - point_x - 1
+            if(temp_x < h - 100): # more than half of h
+                break
+            if(mask[temp_x][anchor]) >= 200:  # mask value
+                out_point = temp_x
+                break
+        dist = h - out_point
+        return dist
+
+
+    def main(self):
+        rospy.spin()
+
+if __name__ == '__main__':
+    rospy.init_node('control_lane_gazebo')
+    node = ControlLane()
+    node.main()
